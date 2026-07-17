@@ -60,15 +60,41 @@ def ask_local_ai_for_commands(repo_blueprint):
         return None
 
 def execute_commands(commands_text):
-    """Executes the generated instructions directly in the local terminal."""
+    """Executes the generated instructions directly in the local terminal, filtering non-commands."""
     if not commands_text:
         return
 
+    raw_lines = commands_text.split('\n')
+    commands = []
+
+    # Clean and filter out conversational lines added by the AI
+    for line in raw_lines:
+        clean_line = line.strip()
+        if not clean_line:
+            continue
+            
+        # Skip conversational introductory sentences, step numbers, and bullet symbols
+        if (clean_line.lower().startswith("here is") or 
+            clean_line.lower().startswith("step") or 
+            "dependencies:" in clean_line.lower() or 
+            clean_line.startswith("```")):
+            continue
+            
+        # Clean up accidental numbering or bullets remaining on valid command lines (e.g., "1. pip install" -> "pip install")
+        if ". " in clean_line[:5]:
+            clean_line = clean_line.split(". ", 1)[1]
+        if clean_line.startswith("- ") or clean_line.startswith("* "):
+            clean_line = clean_line[2:]
+            
+        commands.append(clean_line.strip())
+
+    if not commands:
+        print("❌ No executable terminal commands were detected after filtering.")
+        return
+
     print("\n📋 --- LOCAL AI GENERATED SETUP STEPS ---")
-    commands = [line.strip() for line in commands_text.split('\n') if line.strip()]
-    
     for i, cmd in enumerate(commands, 1):
-        print(f"Step {i}: {cmd}")
+        print(f"Command {i}: {cmd}")
 
     confirm = input("\n🚀 Do you want RepoPilot to execute these commands automatically? (yes/no): ")
     if confirm.lower() in ['yes', 'y']:
