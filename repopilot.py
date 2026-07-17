@@ -6,11 +6,52 @@ from openai import OpenAI
 
 # Commands ke known prefixes — fallback whitelist filter ke liye
 KNOWN_COMMAND_PREFIXES = (
-    'pip', 'pip3', 'npm', 'yarn', 'pnpm', 'python', 'python3',
-    'conda', 'docker', 'poetry', 'go', 'cargo', 'brew', 'apt',
-    'apt-get', 'sudo', 'export', 'set', 'source', 'virtualenv',
-    'mkdir', 'touch', 'node', 'npx', 'bundle', 'gem', 'composer',
-    'dotnet', 'mvn', 'gradle'
+    # Python
+    'pip', 'pip3', 'python', 'python3', 'py', 'conda', 'mamba',
+    'poetry', 'pipenv', 'virtualenv', 'venv', 'pyenv', 'uv',
+
+    # Node.js / JavaScript
+    'npm', 'yarn', 'pnpm', 'npx', 'node', 'bun', 'deno',
+
+    # Rust
+    'cargo', 'rustup',
+
+    # Java / JVM
+    'mvn', 'mvnw', 'gradle', 'gradlew', 'java', 'javac', 'sdk',
+
+    # .NET / C#
+    'dotnet', 'nuget',
+
+    # Ruby
+    'bundle', 'bundler', 'gem', 'rails', 'rake', 'rbenv', 'rvm',
+
+    # PHP
+    'composer', 'php', 'artisan',
+
+    # Go
+    'go',
+
+    # Windows / PowerShell
+    'choco', 'winget', 'scoop', 'install-package', 'install-module',
+    'set-executionpolicy',
+
+    # macOS
+    'brew',
+
+    # Linux package managers
+    'apt', 'apt-get', 'yum', 'dnf', 'pacman', 'snap', 'flatpak',
+    'apk', 'zypper',
+
+    # Containers / orchestration
+    'docker', 'docker-compose', 'podman', 'kubectl', 'helm',
+
+    # Shell / env / filesystem
+    'sudo', 'export', 'set', 'source', 'mkdir', 'touch', 'chmod',
+    'chown', 'curl', 'wget', 'unzip', 'tar', 'git',
+
+    # Misc build tools / other ecosystems
+    'make', 'cmake', 'ninja', 'terraform', 'ansible-playbook',
+    'flutter', 'dart', 'swift', 'pod', 'cocoapods',
 )
 
 
