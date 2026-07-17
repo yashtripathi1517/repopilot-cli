@@ -82,11 +82,15 @@ def looks_like_command(line):
     """Heuristic fallback check: kya ye line actually ek terminal command jaisi dikhti hai?"""
     if not line:
         return False
-    # Sentences aksar punctuation pe end hoti hain
+    first_word = line.split()[0].lower() if line.split() else ""
+    # Agar first word known command prefix hai, to ise command maano —
+    # chahe wo '.' pe end ho (e.g. 'pip install -e .' ya 'npm install .')
+    if first_word in KNOWN_COMMAND_PREFIXES:
+        return True
+    # Warna agar sentence-jaisa punctuation hai, to reject karo
     if line.endswith(('.', ':', '!', '?')):
         return False
-    first_word = line.split()[0].lower() if line.split() else ""
-    return first_word in KNOWN_COMMAND_PREFIXES
+    return False
 
 
 def extract_commands_block(commands_text):
