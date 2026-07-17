@@ -58,7 +58,7 @@ KNOWN_COMMAND_PREFIXES = (
 def scan_repository():
     """Scans the current folder for setup configuration files."""
     important_files = {}
-    target_files = ['package.json', 'requirements.txt', 'Dockerfile', '.env.example', 'README.md']
+    target_files = ['package.json', 'requirements.txt', 'Dockerfile', '.env.example', 'README.md','README test setup.md']
 
     print("🔍 Scanning current directory for blueprints...")
     for filename in os.listdir('.'):
