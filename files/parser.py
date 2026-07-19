@@ -299,6 +299,107 @@ def is_runtime_install_command(clean_line):
             any(target in words_lower[1:] for target in RUNTIME_INSTALL_TARGETS))
 
 
+# System-level package managers — these NEVER understand pip-style version
+# pins (==, >=, ~=) or npm-style (@version). If the model attaches one of
+# these installers to a spec with such a version marker, it has confused a
+# language-ecosystem package (Python/Node) for a system package.
+SYSTEM_PACKAGE_MANAGERS = ('choco', 'winget', 'scoop', 'brew', 'apt', 'apt-get',
+                           'yum', 'dnf', 'pacman', 'apk', 'zypper')
+
+
+# Packages that genuinely ARE installed via a system package manager —
+# databases, servers, and other OS-level services. If a system-installer
+# command targets one of these, it's legitimate and left alone.
+KNOWN_SYSTEM_SERVICES = (
+    'postgresql', 'postgres', 'mysql', 'mariadb', 'redis', 'mongodb',
+    'nginx', 'apache2', 'httpd', 'docker', 'git', 'curl', 'wget',
+    'unzip', 'build-essential', 'openssl', 'sqlite3', 'sqlite',
+)
+
+
+def fix_misattributed_system_install(clean_line, ecosystem_hint=None):
+    """Detects a system package manager wrongly paired with one or more
+    language-ecosystem packages, and repairs or flags each one. Handles
+    BOTH single-package lines ('choco install numpy==1.26.4') AND
+    multi-package bundled lines ('choco install python-dotenv sqlalchemy alembic').
+
+    For each package spec found after '<tool> install', applies (in order):
+      1. Syntax-based: a pip/npm-style version spec (==, >=, ~=, @version)
+         is always a misattribution (system package managers don't use
+         this syntax) -> auto-repaired to the correct installer.
+      2. Context-based: if we know the source file (ecosystem_hint, e.g.
+         'requirements.txt' -> pip), a bare name with NO version marker
+         can still be corrected.
+      3. Known-service allowlist: bare names matching a real system
+         service (postgresql, redis, nginx, ...) are left as system-manager commands.
+      4. Otherwise: ambiguous and unsafe to guess — that one package is
+         dropped (with a warning) rather than risking the wrong installer.
+
+    Returns: a LIST of zero or more corrected command strings (since one
+    bundled input line can expand into several output commands, or shrink
+    to zero if every package was ambiguous). If the line isn't a system-
+    package-manager command at all, returns [clean_line] unchanged."""
+    words = clean_line.split()
+    if len(words) < 3:
+        return [clean_line]
+
+    tool = words[0].lower()
+    if tool not in SYSTEM_PACKAGE_MANAGERS:
+        return [clean_line]
+
+    # Everything after "<tool> install" is treated as one or more package
+    # specs (handles both single and bundled multi-package lines).
+    install_verb = words[1]
+    specs = words[2:]
+    if not specs:
+        return [clean_line]
+
+    # Flags (e.g. '-y', '--upgrade') apply to the whole line, not to any
+    # one package — keep them out of the per-package repair logic.
+    flags = [s for s in specs if s.startswith('-')]
+    package_specs = [s for s in specs if not s.startswith('-')]
+    if not package_specs:
+        return [clean_line]
+
+    repaired_commands = []
+    unresolved_system_specs = []
+
+    for spec in package_specs:
+        # Strategy 1: syntax-based (version marker present)
+        correct_prefix = infer_installer_prefix_from_syntax(spec)
+        if correct_prefix:
+            repaired = f"{correct_prefix} {spec}"
+            print(f"🔧 Fixed misattributed system-package command: "
+                  f"'{tool} {install_verb} {spec}' -> {repaired!r}")
+            repaired_commands.append(repaired)
+            continue
+
+        # Strategy 2: context-based (no version marker, but source file known)
+        if ecosystem_hint:
+            repaired = f"{ecosystem_hint} {spec}"
+            print(f"🔧 Fixed misattributed system-package command (via source file context): "
+                  f"'{tool} {install_verb} {spec}' -> {repaired!r}")
+            repaired_commands.append(repaired)
+            continue
+
+        # Strategy 3: known system service — legitimate, keep under original tool
+        if spec.lower() in KNOWN_SYSTEM_SERVICES:
+            unresolved_system_specs.append(spec)
+            continue
+
+        # Strategy 4: ambiguous — drop this one package, warn, move on
+        print(f"⚠️ Skipped (ambiguous system-package target, cannot verify ecosystem): "
+              f"'{tool} {install_verb} {spec}'")
+
+    # Any specs confirmed as real system services get reassembled into a
+    # single command under the original tool (preserving any flags).
+    if unresolved_system_specs:
+        rebuilt = " ".join([tool, install_verb] + flags + unresolved_system_specs)
+        repaired_commands.append(rebuilt)
+
+    return repaired_commands
+
+
 # ---------------------------------------------------------------------
 # BUNDLED MULTI-OS INSTRUCTION DETECTION
 # ---------------------------------------------------------------------
@@ -406,13 +507,25 @@ def deduplicate_commands(commands):
 # MAIN ENTRY POINT: clean_and_extract_commands
 # ---------------------------------------------------------------------
 
-def clean_and_extract_commands(raw_responses):
-    """Main parser entry point. Accepts a list of raw LLM response strings
-    (one per scanned file, under the Split-and-Merge strategy, or a single
-    combined response), runs every cleaning/filtering/repair stage on each,
-    and returns one final, de-duplicated, OS-correct list of commands.
+# Maps a source filename to the installer prefix its packages should use.
+# This lets us correct system-package-manager misattribution even when the
+# package name has no version marker to go on syntactically.
+SOURCE_FILE_ECOSYSTEM_HINTS = {
+    'requirements.txt': 'pip install',
+    'package.json': 'npm install',
+    'go.mod': 'go get',
+}
 
-    raw_responses: list[str] — raw text blocks from the local LLM.
+
+def clean_and_extract_commands(raw_responses):
+    """Main parser entry point. Accepts a list of raw LLM response strings,
+    OR a list of (filename, raw_text) tuples for source-file-aware repair,
+    runs every cleaning/filtering/repair stage on each, and returns one
+    final, de-duplicated, OS-correct list of commands.
+
+    raw_responses: list[str] or list[tuple[str, str]] — raw text blocks
+    from the local LLM, optionally paired with their source filename
+    (recommended, enables context-based misattribution fixes).
     Returns: list[str] — final verified commands, ready for execution.
     """
     current_os = get_current_os()
@@ -420,7 +533,15 @@ def clean_and_extract_commands(raw_responses):
 
     all_commands = []
 
-    for commands_text in raw_responses:
+    for entry in raw_responses:
+        # Support both plain strings and (filename, text) tuples
+        if isinstance(entry, tuple):
+            source_filename, commands_text = entry
+        else:
+            source_filename, commands_text = None, entry
+
+        ecosystem_hint = SOURCE_FILE_ECOSYSTEM_HINTS.get(source_filename)
+
         if not commands_text:
             continue
 
@@ -448,50 +569,58 @@ def clean_and_extract_commands(raw_responses):
                 print(f"⚠️ Skipped (installs a language runtime, assumed already present): {clean_line}")
                 continue
 
-            # Handle bundled multi-OS instructions (parenthetical or '#' comment)
-            stripped, was_modified = strip_bundled_os_instruction(clean_line)
-            if stripped is None:
-                print(f"⚠️ Skipped (bundled multi-OS instruction): {clean_line}")
-                continue
-            if was_modified:
-                print(f"✂️  Trimmed bundled instruction: {clean_line!r} -> {stripped!r}")
-            clean_line = stripped
+            # Fix system package manager wrongly paired with a language-
+            # ecosystem package (via version-syntax OR source-file context).
+            # This can expand ONE bundled line into MULTIPLE repaired commands
+            # (e.g. 'choco install a b c' -> 'pip install a', 'pip install b', ...),
+            # so every candidate below is run through the rest of the pipeline.
+            candidate_lines = fix_misattributed_system_install(clean_line, ecosystem_hint)
 
-            # Clean up accidental numbering or bullets remaining on valid command lines
-            clean_line = strip_formatting_artifacts(clean_line)
+            for candidate in candidate_lines:
+                # Handle bundled multi-OS instructions (parenthetical or '#' comment)
+                stripped, was_modified = strip_bundled_os_instruction(candidate)
+                if stripped is None:
+                    print(f"⚠️ Skipped (bundled multi-OS instruction): {candidate}")
+                    continue
+                if was_modified:
+                    print(f"✂️  Trimmed bundled instruction: {candidate!r} -> {stripped!r}")
+                candidate = stripped
 
-            # Whitelist safety net — sirf tabhi add karo jab command jaisa lage
-            if not looks_like_command(clean_line):
-                # Before giving up, check if this is a bare package spec the
-                # model forgot to prefix (e.g. "pytest==8.1.1" right after a
-                # "pip install X" line). If so, repair it using syntax first,
-                # then the last installer command seen as fallback.
-                if looks_like_bare_package_spec(clean_line):
-                    prefix = infer_installer_prefix(
-                        clean_line, all_commands[-1] if all_commands else None
-                    )
-                    if prefix:
-                        repaired = f"{prefix} {clean_line}"
-                        print(f"🔧 Repaired bare package spec: {clean_line!r} -> {repaired!r}")
-                        clean_line = repaired
+                # Clean up accidental numbering or bullets remaining on valid command lines
+                candidate = strip_formatting_artifacts(candidate)
+
+                # Whitelist safety net — sirf tabhi add karo jab command jaisa lage
+                if not looks_like_command(candidate):
+                    # Before giving up, check if this is a bare package spec the
+                    # model forgot to prefix (e.g. "pytest==8.1.1" right after a
+                    # "pip install X" line). If so, repair it using syntax first,
+                    # then the last installer command seen as fallback.
+                    if looks_like_bare_package_spec(candidate):
+                        prefix = infer_installer_prefix(
+                            candidate, all_commands[-1] if all_commands else None
+                        )
+                        if prefix:
+                            repaired = f"{prefix} {candidate}"
+                            print(f"🔧 Repaired bare package spec: {candidate!r} -> {repaired!r}")
+                            candidate = repaired
+                        else:
+                            print(f"⚠️ Skipped (not a command): {candidate}")
+                            continue
                     else:
-                        print(f"⚠️ Skipped (not a command): {clean_line}")
+                        print(f"⚠️ Skipped (not a command): {candidate}")
                         continue
-                else:
-                    print(f"⚠️ Skipped (not a command): {clean_line}")
+
+                # OS filter — dusre OS ke package-manager commands skip karo (sudo-aware)
+                if not is_command_for_current_os(candidate, current_os):
+                    required = OS_SPECIFIC_PREFIXES.get(get_effective_command_word(candidate))
+                    print(f"⏭️  Skipped (needs {required}, you're on {current_os}): {candidate}")
                     continue
 
-            # OS filter — dusre OS ke package-manager commands skip karo (sudo-aware)
-            if not is_command_for_current_os(clean_line, current_os):
-                required = OS_SPECIFIC_PREFIXES.get(get_effective_command_word(clean_line))
-                print(f"⏭️  Skipped (needs {required}, you're on {current_os}): {clean_line}")
-                continue
-
-            # Split multi-package lines into individual commands
-            split_result = split_multi_package_command(clean_line)
-            if len(split_result) > 1:
-                print(f"✂️  Split multi-package command into {len(split_result)}: {clean_line!r}")
-            all_commands.extend(split_result)
+                # Split multi-package lines into individual commands
+                split_result = split_multi_package_command(candidate)
+                if len(split_result) > 1:
+                    print(f"✂️  Split multi-package command into {len(split_result)}: {candidate!r}")
+                all_commands.extend(split_result)
 
     # Remove redundant individual pip installs when a bulk -r install exists
     all_commands = deduplicate_bulk_vs_individual(all_commands)

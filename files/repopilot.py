@@ -12,8 +12,26 @@ a single unified pass. The final verified command list is then executed
 via subprocess.run().
 """
 
+import sys
 import subprocess
-from openai import OpenAI
+
+# ── Fix for Windows cp1252 encoding crash ──────────────────────────
+# Windows terminals default to cp1252 which cannot handle emoji/unicode
+# characters used throughout RepoPilot's output. Force UTF-8 so emojis
+# either render properly (Windows Terminal, VS Code) or get replaced
+# gracefully ('?') on legacy consoles — instead of crashing outright.
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+#from openai import OpenAI
 
 from scanner import scan_repository
 from parser import clean_and_extract_commands, get_current_os
