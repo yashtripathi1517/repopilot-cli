@@ -31,7 +31,7 @@ if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
     except Exception:
         pass
 
-#from openai import OpenAI
+from openai import OpenAI
 
 from scanner import scan_repository
 from parser import clean_and_extract_commands, get_current_os
